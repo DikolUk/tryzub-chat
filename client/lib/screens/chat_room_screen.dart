@@ -89,7 +89,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
           setState(() {
             _messages.add(LocalMessage(
               id: msgId ?? '${DateTime.now().millisecondsSinceEpoch}',
-              senderId: senderId,
+              senderId: senderId ?? 0,
               text: decrypted,
               time: DateTime.now(),
               isMe: false,
@@ -284,7 +284,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                             ),
                             border: Border.all(
                               color: msg.isMe
-                                  ? AppTheme.primaryBlue.withOpacity(0.4)
+                                  ? AppTheme.primaryBlue.withValues(alpha: 0.4)
                                   : AppTheme.dividerDark,
                               width: 1,
                             ),

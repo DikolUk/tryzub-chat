@@ -176,7 +176,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
-                        color: AppTheme.accentGold.withOpacity(0.3),
+                        color: AppTheme.accentGold.withValues(alpha: 0.3),
                         blurRadius: 18,
                         offset: const Offset(0, 6),
                       ),
