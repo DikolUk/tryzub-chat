@@ -1,0 +1,36 @@
+workflows:
+  ios-workflow:
+    name: iOS Tryzub Chat Build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Disable Swift Package Manager & configure Flutter
+        script: |
+          flutter config --no-enable-swift-package-manager
+      - name: Set up code signing settings on Xcode project
+        script: xcode-project use-profiles --warn-only
+      - name: Get Flutter packages & setup iOS config
+        script: |
+          flutter precache --ios
+          flutter packages pub get
+          flutter build ios --config-only --release --no-codesign
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios && pod install --repo-update
+      - name: Build iOS Archive (Unsigned)
+        script: |
+          flutter build ipa --release --no-codesign
+      - name: Package IPA
+        script: |
+          mkdir -p Payload
+          cp -r build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app Payload/
+          zip -qr build/TryzubChat-iOS.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - build/TryzubChat-iOS.ipa
+      - build/ios/archive/Runner.xcarchive
+      - build/ios/ipa/*.ipa
