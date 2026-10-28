@@ -1,0 +1,57 @@
+services:
+  varta-db:
+    image: postgres:16-alpine
+    container_name: varta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-varta_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-varta_secure_password_2026}
+      POSTGRES_DB: ${DB_NAME:-varta_db}
+    volumes:
+      - varta_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-varta_user} -d ${DB_NAME:-varta_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - varta-net
+
+  varta-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: varta-backend
+    restart: unless-stopped
+    depends_on:
+      varta-db:
+        condition: service_healthy
+    ports:
+      # Expose only to 127.0.0.1 so CloudPanel Nginx Reverse Proxy forwards traffic safely
+      - "127.0.0.1:3047:3047"
+    environment:
+      PORT: "3047"
+      DB_HOST: "varta-db"
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-varta_user}
+      DB_PASSWORD: ${DB_PASSWORD:-varta_secure_password_2026}
+      DB_NAME: ${DB_NAME:-varta_db}
+      DB_SSLMODE: "disable"
+      ADMIN_INITIAL_INVITE: ${ADMIN_INITIAL_INVITE:-VARTA-INITIAL-ROOT-SETUP-2026}
+      SESSION_SECRET: ${SESSION_SECRET:-varta_secret_key_minimum_32_characters_long_crypto_2026}
+      ENV: "production"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3047/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - varta-net
+
+volumes:
+  varta_pgdata:
+    name: varta_postgres_data
+
+networks:
+  varta-net:
+    name: varta_internal_net
