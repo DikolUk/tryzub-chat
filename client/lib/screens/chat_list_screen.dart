@@ -7,6 +7,7 @@ import '../core/models/user.dart';
 import '../core/services/api_service.dart';
 import '../core/services/auth_provider.dart';
 import '../core/services/socket_service.dart';
+import '../core/utils/file_helper.dart';
 import 'auth_screen.dart';
 import 'chat_room_screen.dart';
 
@@ -55,6 +56,52 @@ class _ChatListScreenState extends State<ChatListScreen> {
     if (key == null || !mounted) return;
     final formattedKey = VartaCrypto.formatRecoveryKey(key);
 
+    void copyToClipboard(BuildContext ctx) {
+      Clipboard.setData(ClipboardData(text: key));
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(
+          backgroundColor: AppTheme.onlineGreen,
+          content: Text('✓ 64-значний ключ скопійовано в буфер обміну!'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+
+    Future<void> saveToFile(BuildContext ctx) async {
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final uname = auth.currentUser?.username ?? 'user';
+      final content = "============================================================\n"
+          "VARTA SECURE MESSENGER — 64-CHARACTER MASTER RECOVERY KEY\n"
+          "============================================================\n\n"
+          "USER: $uname\n"
+          "SAVED: ${DateTime.now().toUtc().toIso8601String()}\n\n"
+          "RAW KEY (64 HEX):\n$key\n\n"
+          "FORMATTED:\n$formattedKey\n\n"
+          "Keep this key secure and offline.\n"
+          "============================================================\n";
+
+      try {
+        await downloadTextFile(filename: 'varta-recovery-key-$uname.txt', content: content);
+        if (ctx.mounted) {
+          ScaffoldMessenger.of(ctx).showSnackBar(
+            const SnackBar(
+              backgroundColor: AppTheme.onlineGreen,
+              content: Text('✓ Файл ключа успішно завантажено!'),
+            ),
+          );
+        }
+      } catch (e) {
+        if (ctx.mounted) {
+          ScaffoldMessenger.of(ctx).showSnackBar(
+            SnackBar(
+              backgroundColor: AppTheme.errorRed,
+              content: Text('Помилка збереження файлу: $e'),
+            ),
+          );
+        }
+      }
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -87,45 +134,81 @@ class _ChatListScreenState extends State<ChatListScreen> {
               style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4),
             ),
             const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.bgDark,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppTheme.dividerDark),
-              ),
-              child: SelectableText(
-                formattedKey,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.accentGold,
-                  letterSpacing: 1.1,
-                  height: 1.5,
+
+            // Tap-to-copy Key Container
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => copyToClipboard(context),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgDark,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.6)),
+                ),
+                child: Column(
+                  children: [
+                    SelectableText(
+                      formattedKey,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.accentGold,
+                        letterSpacing: 1.1,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.touch_app, size: 14, color: AppTheme.textMuted),
+                        SizedBox(width: 4),
+                        Text(
+                          'Натисніть на ключ, щоб скопіювати',
+                          style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
             const SizedBox(height: 14),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.cardDark,
-                foregroundColor: AppTheme.textPrimary,
-                side: const BorderSide(color: AppTheme.dividerDark),
-              ),
-              icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
-              label: const Text('Скопіювати 64-значний ключ', style: TextStyle(fontSize: 13)),
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: key));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    backgroundColor: AppTheme.onlineGreen,
-                    content: Text('✓ Ключ скопійовано!'),
-                    duration: Duration(seconds: 2),
+
+            // Action Buttons (Copy & Download)
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.cardDark,
+                      foregroundColor: AppTheme.textPrimary,
+                      side: const BorderSide(color: AppTheme.dividerDark),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
+                    label: const Text('Скопіювати', style: TextStyle(fontSize: 12)),
+                    onPressed: () => copyToClipboard(context),
                   ),
-                );
-              },
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.cardDark,
+                      foregroundColor: AppTheme.textPrimary,
+                      side: const BorderSide(color: AppTheme.dividerDark),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    icon: const Icon(Icons.download, size: 16, color: AppTheme.accentGold),
+                    label: const Text('Скачати файл', style: TextStyle(fontSize: 12)),
+                    onPressed: () => saveToFile(context),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

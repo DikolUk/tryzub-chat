@@ -36,6 +36,19 @@ class VartaCrypto {
     return clean;
   }
 
+  /// Extracts 64-character hexadecimal key from text or file content
+  static String? extractRecoveryKey(String text) {
+    final clean = text.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+    if (clean.length == 64) return clean;
+    if (clean.length > 64) {
+      // Find 64 hex substring
+      final m = RegExp(r'[0-9A-Fa-f]{64}').firstMatch(clean);
+      if (m != null) return m.group(0);
+      return clean.substring(0, 64);
+    }
+    return null;
+  }
+
   /// Derives the persistent Identity KeyPair deterministically from a 64-character recovery key
   static Future<SimpleKeyPair> deriveIdentityKeyPair(String recoveryKeyHex) async {
     final clean = normalizeRecoveryKey(recoveryKeyHex);

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/theme.dart';
 import '../core/crypto/varta_crypto.dart';
 import '../core/services/api_service.dart';
 import '../core/services/auth_provider.dart';
+import '../core/utils/file_helper.dart';
 import 'chat_list_screen.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -113,7 +115,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
     if (res['success'] == true && mounted) {
       final recoveryKey = res['recovery_key'] as String?;
       if (recoveryKey != null) {
-        await _showRecoveryKeyModal(recoveryKey);
+        await _showRecoveryKeyModal(recoveryKey, username: username);
       }
       if (mounted) {
         Navigator.pushReplacement(
@@ -209,9 +211,124 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
     }
   }
 
-  Future<void> _showRecoveryKeyModal(String key) async {
+  Future<void> _pickKeyFromFile() async {
+    try {
+      final file = await FilePicker.pickFile(
+        type: FileType.any,
+      );
+      if (file != null) {
+        final content = await file.xFile.readAsString();
+        final extracted = VartaCrypto.extractRecoveryKey(content);
+        if (extracted != null) {
+          setState(() {
+            _recKeyCtrl.text = VartaCrypto.formatRecoveryKey(extracted);
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: AppTheme.onlineGreen,
+                content: Text('✓ Ключ відновлення зчитано з файлу: ${file.name}'),
+              ),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                backgroundColor: AppTheme.errorRed,
+                content: Text('✕ У вибраному файлі не знайдено 64-значного hex ключа'),
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppTheme.errorRed,
+            content: Text('Помилка читання файлу: $e'),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data != null && data.text != null) {
+      final extracted = VartaCrypto.extractRecoveryKey(data.text!);
+      if (extracted != null) {
+        setState(() {
+          _recKeyCtrl.text = VartaCrypto.formatRecoveryKey(extracted);
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              backgroundColor: AppTheme.onlineGreen,
+              content: Text('✓ Ключ успішно вставлено з буфера обміну!'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } else {
+        setState(() {
+          _recKeyCtrl.text = data.text!;
+        });
+      }
+    }
+  }
+
+  Future<void> _showRecoveryKeyModal(String key, {String? username}) async {
     bool hasSavedKey = false;
     final formattedKey = VartaCrypto.formatRecoveryKey(key);
+
+    void copyToClipboard(BuildContext ctx) {
+      Clipboard.setData(ClipboardData(text: key));
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(
+          backgroundColor: AppTheme.onlineGreen,
+          content: Text('✓ 64-значний ключ скопійовано в буфер обміну!'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+
+    Future<void> saveToFile(BuildContext ctx) async {
+      final content = "============================================================\n"
+          "VARTA SECURE MESSENGER — 64-CHARACTER MASTER RECOVERY KEY\n"
+          "============================================================\n\n"
+          "USER: ${username ?? 'varta_user'}\n"
+          "GENERATED: ${DateTime.now().toUtc().toIso8601String()}\n\n"
+          "RAW KEY (64 HEX):\n$key\n\n"
+          "FORMATTED:\n$formattedKey\n\n"
+          "IMPORTANT:\n"
+          "Keep this key secure and offline.\n"
+          "This is the ONLY way to recover your E2EE messages and chats\n"
+          "if you lose your device or reinstall the app.\n"
+          "============================================================\n";
+
+      try {
+        await downloadTextFile(filename: 'varta-recovery-key.txt', content: content);
+        if (ctx.mounted) {
+          ScaffoldMessenger.of(ctx).showSnackBar(
+            const SnackBar(
+              backgroundColor: AppTheme.onlineGreen,
+              content: Text('✓ Файл varta-recovery-key.txt збережено!'),
+            ),
+          );
+        }
+      } catch (e) {
+        if (ctx.mounted) {
+          ScaffoldMessenger.of(ctx).showSnackBar(
+            SnackBar(
+              backgroundColor: AppTheme.errorRed,
+              content: Text('Помилка завантаження файлу: $e'),
+            ),
+          );
+        }
+      }
+    }
 
     await showDialog(
       context: context,
@@ -248,49 +365,85 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const Text(
-                      'Обов\'язково збережіть цей 64-значний ключ у безпечному місці. Це єдиний спосіб відновити доступ до ваших чатів та шифрування у разі втрати або зміни пристрою!',
+                      'Обов\'язково збережіть цей 64-значний ключ у безпечному місці. Це єдиний спосіб відновити доступ до ваших чатів та шифрування у разі втрати пристрою!',
                       style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4),
                     ),
                     const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: AppTheme.bgDark,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppTheme.dividerDark),
-                      ),
-                      child: SelectableText(
-                        formattedKey,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.accentGold,
-                          letterSpacing: 1.1,
-                          height: 1.5,
+
+                    // Tappable Key Box
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => copyToClipboard(context),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bgDark,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.6)),
+                        ),
+                        child: Column(
+                          children: [
+                            SelectableText(
+                              formattedKey,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.accentGold,
+                                letterSpacing: 1.1,
+                                height: 1.5,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.touch_app, size: 14, color: AppTheme.textMuted),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Натисніть на поле, щоб скопіювати',
+                                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.cardDark,
-                        foregroundColor: AppTheme.textPrimary,
-                        side: const BorderSide(color: AppTheme.dividerDark),
-                      ),
-                      icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
-                      label: const Text('Скопіювати 64-значний ключ', style: TextStyle(fontSize: 13)),
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: key));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            backgroundColor: AppTheme.onlineGreen,
-                            content: Text('✓ Ключ скопійовано в буфер обміну!'),
-                            duration: Duration(seconds: 2),
+                    const SizedBox(height: 14),
+
+                    // Copy & Download Action Buttons
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.cardDark,
+                              foregroundColor: AppTheme.textPrimary,
+                              side: const BorderSide(color: AppTheme.dividerDark),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                            ),
+                            icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
+                            label: const Text('Скопіювати', style: TextStyle(fontSize: 12)),
+                            onPressed: () => copyToClipboard(context),
                           ),
-                        );
-                      },
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.cardDark,
+                              foregroundColor: AppTheme.textPrimary,
+                              side: const BorderSide(color: AppTheme.dividerDark),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                            ),
+                            icon: const Icon(Icons.download, size: 16, color: AppTheme.accentGold),
+                            label: const Text('Скачати файл', style: TextStyle(fontSize: 12)),
+                            onPressed: () => saveToFile(context),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
                     CheckboxListTile(
@@ -412,7 +565,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
 
                 // Tab Views
                 SizedBox(
-                  height: 400,
+                  height: 420,
                   child: TabBarView(
                     controller: _tabController,
                     children: [
@@ -574,13 +727,32 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
             controller: _recKeyCtrl,
             maxLines: 2,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: '64-значний ключ відновлення',
-              hintText: 'A8F4-1C9D-E342-... (або 64 hex символи)',
-              prefixIcon: Icon(Icons.vpn_key, color: AppTheme.accentGold),
+              hintText: 'A8F4-1C9D-E342-... (або вставте файл)',
+              prefixIcon: const Icon(Icons.vpn_key, color: AppTheme.accentGold),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.content_paste, color: AppTheme.accentGold, size: 20),
+                tooltip: 'Вставити з буфера обміну',
+                onPressed: _pasteFromClipboard,
+              ),
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 10),
+
+          // Pick key from file button
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.accentGold,
+              side: const BorderSide(color: AppTheme.dividerDark),
+              padding: const EdgeInsets.symmetric(vertical: 10),
+            ),
+            icon: const Icon(Icons.file_open_outlined, size: 18, color: AppTheme.accentGold),
+            label: const Text('📁 Вставити ключ із файлу (.txt / .key)', style: TextStyle(fontSize: 12)),
+            onPressed: _pickKeyFromFile,
+          ),
+          const SizedBox(height: 16),
+
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.accentGold,
