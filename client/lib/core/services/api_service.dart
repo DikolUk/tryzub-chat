@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../constants/api_endpoints.dart';
 import '../models/user.dart';
@@ -168,6 +169,23 @@ class ApiService {
     }
   }
 
+  static Future<List<Map<String, dynamic>>> getConversationHistory(String token, int withUserId, {int limit = 100}) async {
+    try {
+      final res = await http.get(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/messages/history?with_user=$withUserId&limit=$limit'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        final List list = jsonDecode(res.body);
+        return list.map((e) => e as Map<String, dynamic>).toList();
+      }
+      return [];
+    } catch (e) {
+      debugPrint('[API] getConversationHistory error: $e');
+      return [];
+    }
+  }
+
   static Future<bool> ackMessages(String token, List<String> messageIds) async {
     try {
       final res = await http.post(
@@ -181,6 +199,98 @@ class ApiService {
       return res.statusCode == 200;
     } catch (e) {
       return false;
+    }
+  }
+
+  static Future<bool> markMessagesRead(String token, List<String> messageIds) async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/messages/read'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'message_ids': messageIds}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> deleteMessage(String token, String messageId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/messages/delete'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'message_id': messageId}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> addReaction(String token, String messageId, String emoji) async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/messages/reaction'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'message_id': messageId, 'emoji': emoji}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Encrypted Media Vault
+  static Future<Map<String, dynamic>?> uploadEncryptedBlob({
+    required String token,
+    required Uint8List ciphertext,
+    String mimeType = 'application/octet-stream',
+  }) async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/media/upload'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': mimeType,
+        },
+        body: ciphertext,
+      );
+      if (res.statusCode == 201) {
+        return jsonDecode(res.body);
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[API] uploadEncryptedBlob error: $e');
+      return null;
+    }
+  }
+
+  static Future<Uint8List?> downloadEncryptedBlob({
+    required String token,
+    required String mediaId,
+  }) async {
+    try {
+      final res = await http.get(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/media/$mediaId'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        return res.bodyBytes;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[API] downloadEncryptedBlob error: $e');
+      return null;
     }
   }
 }

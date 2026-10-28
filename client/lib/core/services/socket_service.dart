@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../constants/api_endpoints.dart';
 
 class SocketService extends ChangeNotifier {
-  WebSocket? _socket;
+  WebSocketChannel? _channel;
+  StreamSubscription? _subscription;
   bool _isConnected = false;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
@@ -19,7 +20,23 @@ class SocketService extends ChangeNotifier {
   final _ackController = StreamController<String>.broadcast();
   Stream<String> get ackStream => _ackController.stream;
 
+  final _deliveryController = StreamController<String>.broadcast();
+  Stream<String> get deliveryStream => _deliveryController.stream;
+
+  final _readReceiptController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get readReceiptStream => _readReceiptController.stream;
+
+  final _typingController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get typingStream => _typingController.stream;
+
+  final _reactionController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get reactionStream => _reactionController.stream;
+
+  final _deleteController = StreamController<String>.broadcast();
+  Stream<String> get deleteStream => _deleteController.stream;
+
   void connect(String token) {
+    if (_currentToken == token && _isConnected) return;
     _currentToken = token;
     _doConnect();
   }
@@ -29,31 +46,38 @@ class SocketService extends ChangeNotifier {
     _reconnectTimer?.cancel();
 
     try {
-      final uri = Uri.parse('${ApiEndpoints.wsUrl}?token=$_currentToken');
-      _socket = await WebSocket.connect(uri.toString());
+      const wsUrl = ApiEndpoints.wsUrl;
+      final uri = Uri.parse('$wsUrl?token=$_currentToken');
+      
+      _channel = WebSocketChannel.connect(uri);
+      await _channel!.ready;
+
       _isConnected = true;
       notifyListeners();
 
       _pingTimer?.cancel();
       _pingTimer = Timer.periodic(const Duration(seconds: 25), (t) {
-        if (_isConnected && _socket != null) {
+        if (_isConnected) {
           sendFrame({'type': 'ping'});
         }
       });
 
-      _socket!.listen(
+      _subscription = _channel!.stream.listen(
         (data) {
           _onData(data);
         },
         onError: (err) {
+          debugPrint('[WS] Error: $err');
           _handleDisconnect();
         },
         onDone: () {
+          debugPrint('[WS] Connection closed');
           _handleDisconnect();
         },
         cancelOnError: false,
       );
     } catch (e) {
+      debugPrint('[WS] Connect error: $e');
       _handleDisconnect();
     }
   }
@@ -65,21 +89,51 @@ class SocketService extends ChangeNotifier {
       for (final line in lines) {
         if (line.trim().isEmpty) continue;
         final json = jsonDecode(line) as Map<String, dynamic>;
-        final type = json['type'];
+        final type = json['type'] as String?;
 
-        if (type == 'msg') {
-          _messageController.add(json);
-          // Auto send ack for delivery
-          if (json['message_id'] != null) {
-            sendFrame({
-              'type': 'ack',
-              'message_id': json['message_id'],
-            });
-          }
-        } else if (type == 'server_ack') {
-          if (json['message_id'] != null) {
-            _ackController.add(json['message_id'] as String);
-          }
+        switch (type) {
+          case 'msg':
+            _messageController.add(json);
+            if (json['message_id'] != null) {
+              sendFrame({
+                'type': 'ack',
+                'message_id': json['message_id'],
+              });
+            }
+            break;
+
+          case 'server_ack':
+            if (json['message_id'] != null) {
+              _ackController.add(json['message_id'] as String);
+            }
+            break;
+
+          case 'delivery_receipt':
+            if (json['message_id'] != null) {
+              _deliveryController.add(json['message_id'] as String);
+            }
+            break;
+
+          case 'read_receipt':
+            _readReceiptController.add(json);
+            break;
+
+          case 'typing':
+            _typingController.add(json);
+            break;
+
+          case 'reaction':
+            _reactionController.add(json);
+            break;
+
+          case 'msg_deleted':
+            if (json['message_id'] != null) {
+              _deleteController.add(json['message_id'] as String);
+            }
+            break;
+
+          case 'pong':
+            break;
         }
       }
     } catch (e) {
@@ -88,10 +142,11 @@ class SocketService extends ChangeNotifier {
   }
 
   void sendFrame(Map<String, dynamic> frame) {
-    if (_socket != null && _isConnected) {
+    if (_channel != null && _isConnected) {
       try {
-        _socket!.add(jsonEncode(frame));
+        _channel!.sink.add(jsonEncode(frame));
       } catch (e) {
+        debugPrint('[WS] sendFrame error: $e');
         _handleDisconnect();
       }
     }
@@ -112,6 +167,37 @@ class SocketService extends ChangeNotifier {
     });
   }
 
+  void sendTyping({required int recipientUserId, required bool isTyping}) {
+    sendFrame({
+      'type': 'typing',
+      'recipient_user_id': recipientUserId,
+      'is_typing': isTyping,
+    });
+  }
+
+  void sendReadReceipt({required List<String> messageIds, required int recipientUserId}) {
+    sendFrame({
+      'type': 'read',
+      'recipient_user_id': recipientUserId,
+      'message_ids': messageIds,
+    });
+  }
+
+  void sendReaction({required String messageId, required String emoji}) {
+    sendFrame({
+      'type': 'reaction',
+      'message_id': messageId,
+      'emoji': emoji,
+    });
+  }
+
+  void sendDeleteMessage({required String messageId}) {
+    sendFrame({
+      'type': 'delete',
+      'message_id': messageId,
+    });
+  }
+
   void _handleDisconnect() {
     _isConnected = false;
     _pingTimer?.cancel();
@@ -126,8 +212,10 @@ class SocketService extends ChangeNotifier {
   void disconnect() {
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();
-    _socket?.close();
-    _socket = null;
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
     _isConnected = false;
     _currentToken = null;
     notifyListeners();
@@ -138,6 +226,11 @@ class SocketService extends ChangeNotifier {
     disconnect();
     _messageController.close();
     _ackController.close();
+    _deliveryController.close();
+    _readReceiptController.close();
+    _typingController.close();
+    _reactionController.close();
+    _deleteController.close();
     super.dispose();
   }
 }

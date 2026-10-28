@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/theme.dart';
 import '../core/crypto/varta_crypto.dart';
 import '../core/models/user.dart';
 import '../core/services/api_service.dart';
 import '../core/services/auth_provider.dart';
+import '../core/services/chat_storage.dart';
 import '../core/services/socket_service.dart';
 import '../core/utils/file_helper.dart';
 import 'auth_screen.dart';
@@ -20,6 +22,7 @@ class ChatListScreen extends StatefulWidget {
 
 class _ChatListScreenState extends State<ChatListScreen> {
   List<UserModel> _users = [];
+  Map<String, dynamic> _recentChats = {};
   bool _isLoading = true;
 
   @override
@@ -43,9 +46,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     setState(() => _isLoading = true);
     final users = await ApiService.getUsers(auth.token!);
+    final recents = await ChatStorage.getRecentChats(auth.currentUser?.id ?? 0);
     if (mounted) {
       setState(() {
         _users = users;
+        _recentChats = recents;
         _isLoading = false;
       });
     }
@@ -362,6 +367,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.dividerDark),
                         itemBuilder: (ctx, i) {
                           final user = _users[i];
+                          final recent = _recentChats['${user.id}'] as Map<String, dynamic>?;
+                          final lastText = recent?['last_text'] as String?;
+                          final lastTimeStr = recent?['last_time'] as String?;
+                          final lastTime = lastTimeStr != null ? DateTime.tryParse(lastTimeStr) : null;
+
                           return ListTile(
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                             leading: CircleAvatar(
@@ -378,12 +388,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             ),
                             title: Row(
                               children: [
-                                Text(
-                                  user.displayName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15,
-                                    color: AppTheme.textPrimary,
+                                Expanded(
+                                  child: Text(
+                                    user.displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                      color: AppTheme.textPrimary,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
@@ -406,17 +420,36 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               ],
                             ),
                             subtitle: Text(
-                              '@${user.username} • 🔒 Захищений зв\'язок',
-                              style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                              lastText ?? '@${user.username} • 🔒 Захищений зв\'язок',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: lastText != null ? AppTheme.textPrimary : AppTheme.textMuted,
+                                fontSize: 13,
+                              ),
                             ),
-                            trailing: const Icon(Icons.chevron_right, color: AppTheme.textMuted),
-                            onTap: () {
-                              Navigator.push(
+                            trailing: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                if (lastTime != null)
+                                  Text(
+                                    DateFormat('HH:mm').format(lastTime),
+                                    style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                                  )
+                                else
+                                  const Icon(Icons.chevron_right, color: AppTheme.textMuted, size: 18),
+                              ],
+                            ),
+                            onTap: () async {
+                              await Navigator.push(
                                 context,
                                 MaterialPageRoute(
                                   builder: (_) => ChatRoomScreen(peerUser: user),
                                 ),
                               );
+                              // Refresh recent chats on return
+                              _loadUsers();
                             },
                           );
                         },
