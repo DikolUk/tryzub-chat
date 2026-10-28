@@ -30,6 +30,7 @@ func (c *CMS) Routes(r chi.Router) {
 	r.Get("/admin", c.HandleAdminUI)
 	r.Get("/admin/", c.HandleAdminUI)
 	r.Post("/admin/login", c.HandleAdminLogin)
+	r.Post("/admin/logout", c.HandleAdminLogout)
 
 	// Admin API
 	r.Route("/api/v1/admin", func(adminR chi.Router) {
@@ -104,6 +105,39 @@ func (c *CMS) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		"token":   rawToken,
 		"user":    user,
 	})
+}
+
+func (c *CMS) HandleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("varta_session")
+	var token string
+	if err == nil && cookie.Value != "" {
+		token = cookie.Value
+	}
+	if token == "" {
+		authH := r.Header.Get("Authorization")
+		if len(authH) > 7 && authH[:7] == "Bearer " {
+			token = authH[7:]
+		}
+	}
+
+	if token != "" {
+		hasher := sha256.New()
+		hasher.Write([]byte(token))
+		tokenHash := hex.EncodeToString(hasher.Sum(nil))
+		_, _ = c.db.Exec("DELETE FROM sessions WHERE token_hash = $1", tokenHash)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "varta_session",
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 func (c *CMS) HandleGetStats(w http.ResponseWriter, r *http.Request) {
