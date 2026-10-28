@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -47,6 +48,7 @@ func (c *CMS) Routes(r chi.Router) {
 		adminR.Delete("/users/{id}", c.HandleDeleteUser)
 
 		adminR.Get("/audit", c.HandleGetAudit)
+		adminR.Post("/account", c.HandleUpdateAdminAccount)
 	})
 }
 
@@ -373,6 +375,108 @@ func (c *CMS) HandleGetAudit(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(logs)
+}
+
+func (c *CMS) HandleUpdateAdminAccount(w http.ResponseWriter, r *http.Request) {
+	adminUser, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewUsername     string `json:"new_username"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, `{"error":"невірний формат запиту"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.CurrentPassword == "" {
+		http.Error(w, `{"error":"Введіть поточний пароль для підтвердження змін"}`, http.StatusBadRequest)
+		return
+	}
+
+	var currentHash string
+	err := c.db.QueryRow("SELECT password_hash FROM users WHERE id = $1", adminUser.ID).Scan(&currentHash)
+	if err != nil {
+		http.Error(w, `{"error":"адміністратора не знайдено"}`, http.StatusInternalServerError)
+		return
+	}
+
+	valid, _ := auth.VerifyPassword(req.CurrentPassword, currentHash)
+	if !valid {
+		http.Error(w, `{"error":"Поточний пароль введено невірно"}`, http.StatusUnauthorized)
+		return
+	}
+
+	targetUsername := adminUser.Username
+	usernameChanged := false
+	req.NewUsername = strings.TrimSpace(req.NewUsername)
+	if req.NewUsername != "" && req.NewUsername != adminUser.Username {
+		if len(req.NewUsername) < 3 || len(req.NewUsername) > 32 {
+			http.Error(w, `{"error":"Логін повинен містити від 3 до 32 символів"}`, http.StatusBadRequest)
+			return
+		}
+		var exists int
+		_ = c.db.QueryRow("SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER($1) AND id != $2", req.NewUsername, adminUser.ID).Scan(&exists)
+		if exists > 0 {
+			http.Error(w, `{"error":"Цей логін вже зайнятий іншим користувачем"}`, http.StatusBadRequest)
+			return
+		}
+		targetUsername = req.NewUsername
+		usernameChanged = true
+	}
+
+	targetHash := currentHash
+	passwordChanged := false
+	if req.NewPassword != "" {
+		if len(req.NewPassword) < 8 {
+			http.Error(w, `{"error":"Новий пароль повинен містити щонайменше 8 символів"}`, http.StatusBadRequest)
+			return
+		}
+		newH, err := auth.HashPassword(req.NewPassword)
+		if err != nil {
+			http.Error(w, `{"error":"помилка генерації хешу пароля"}`, http.StatusInternalServerError)
+			return
+		}
+		targetHash = newH
+		passwordChanged = true
+	}
+
+	if !usernameChanged && !passwordChanged {
+		http.Error(w, `{"error":"Вкажіть новий логін або новий пароль для збереження"}`, http.StatusBadRequest)
+		return
+	}
+
+	_, err = c.db.Exec(`
+		UPDATE users
+		SET username = $1, password_hash = $2, updated_at = NOW()
+		WHERE id = $3
+	`, targetUsername, targetHash, adminUser.ID)
+	if err != nil {
+		http.Error(w, `{"error":"помилка збереження даних в базі"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log
+	_, _ = c.db.Exec(`
+		INSERT INTO audit_logs (user_id, action, details)
+		VALUES ($1, 'ADMIN_CREDENTIALS_CHANGED', $2)
+	`, adminUser.ID, fmtDetails(map[string]interface{}{
+		"old_username":     adminUser.Username,
+		"new_username":     targetUsername,
+		"password_changed": passwordChanged,
+	}))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"message":  "Облікові дані адміністратора успішно оновлено",
+		"username": targetUsername,
+	})
 }
 
 func fmtDetails(m map[string]interface{}) string {

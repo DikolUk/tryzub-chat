@@ -156,6 +156,7 @@
         <div class="nav-item" onclick="showTab('invites')">🎟️ Одноразові інвайти</div>
         <div class="nav-item" onclick="showTab('users')">👥 Користувачі та сесії</div>
         <div class="nav-item" onclick="showTab('audit')">📜 Журнал аудиту</div>
+        <div class="nav-item" onclick="showTab('settings')">⚙️ Безпека облікового запису</div>
       </div>
     </div>
 
@@ -281,6 +282,50 @@
             </thead>
             <tbody id="audit-table"></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- 5. Settings Tab (Admin Profile & Security) -->
+      <div class="page" id="tab-settings">
+        <div class="card" style="max-width: 600px;">
+          <div class="card-header">
+            <div class="card-title">Зміна логіна та пароля адміністратора</div>
+          </div>
+          <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5;">
+            Тут ви можете оновити логін або пароль облікового запису безпеки. Для підтвердження обов'язково введіть ваш <strong>поточний пароль</strong>.
+          </p>
+
+          <div id="settings-msg" style="display: none; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px;"></div>
+
+          <form onsubmit="handleUpdateAdmin(event)">
+            <div class="form-group">
+              <label class="form-label">Поточний пароль адміністратора *</label>
+              <input type="password" id="set-current-pwd" class="form-input" placeholder="Введіть поточний пароль" required autocomplete="current-password">
+            </div>
+
+            <div style="border-top: 1px solid var(--border); margin: 20px 0;"></div>
+
+            <div class="form-group">
+              <label class="form-label">Новий логін адміністратора (залиште порожнім, якщо не змінюєте)</label>
+              <input type="text" id="set-new-username" class="form-input" placeholder="Новий логін (від 3 до 32 символів)" autocomplete="username">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Новий пароль (мінімум 8 символів, залиште порожнім якщо не змінюєте)</label>
+              <input type="password" id="set-new-pwd" class="form-input" placeholder="••••••••••••" autocomplete="new-password">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Повторіть новий пароль</label>
+              <input type="password" id="set-confirm-pwd" class="form-input" placeholder="••••••••••••" autocomplete="new-password">
+            </div>
+
+            <div style="margin-top: 24px;">
+              <button type="submit" id="save-settings-btn" class="btn btn-gold">
+                💾 Зберегти нові облікові дані
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -413,7 +458,8 @@
         'dashboard': 'Панель моніторингу',
         'invites': 'Одноразові інвайти',
         'users': 'Користувачі та сесії',
-        'audit': 'Журнал аудиту'
+        'audit': 'Журнал аудиту',
+        'settings': 'Безпека облікового запису'
       };
       document.getElementById('page-title').innerText = titles[tab] || 'VARTA CMS';
       currentTab = tab;
@@ -556,6 +602,89 @@
       const res = await fetch('/api/v1/admin/users/' + id + '/toggle', { method: 'POST', headers: getAuthHeaders() });
       if (res.status === 401) return showLoginView('Сесія закінчилась або потрібна авторизація');
       loadData();
+    }
+
+    async function handleUpdateAdmin(e) {
+      e.preventDefault();
+      const currentPassword = document.getElementById('set-current-pwd').value;
+      const newUsername = document.getElementById('set-new-username').value.trim();
+      const newPassword = document.getElementById('set-new-pwd').value;
+      const confirmPassword = document.getElementById('set-confirm-pwd').value;
+      const msgBox = document.getElementById('settings-msg');
+      const btn = document.getElementById('save-settings-btn');
+
+      msgBox.style.display = 'none';
+
+      if (!newUsername && !newPassword) {
+        msgBox.innerText = 'Вкажіть новий логін або новий пароль для збереження';
+        msgBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        msgBox.style.color = 'var(--danger)';
+        msgBox.style.border = '1px solid var(--danger)';
+        msgBox.style.display = 'block';
+        return;
+      }
+
+      if (newPassword && newPassword !== confirmPassword) {
+        msgBox.innerText = 'Новий пароль і повтор пароля не збігаються';
+        msgBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        msgBox.style.color = 'var(--danger)';
+        msgBox.style.border = '1px solid var(--danger)';
+        msgBox.style.display = 'block';
+        return;
+      }
+
+      btn.innerText = 'Збереження...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/v1/admin/account', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_username: newUsername,
+            new_password: newPassword
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          msgBox.innerText = '✅ ' + (data.message || 'Облікові дані успішно оновлено!');
+          msgBox.style.background = 'rgba(16, 185, 129, 0.15)';
+          msgBox.style.color = 'var(--success)';
+          msgBox.style.border = '1px solid var(--success)';
+          msgBox.style.display = 'block';
+
+          // Clear password fields
+          document.getElementById('set-current-pwd').value = '';
+          document.getElementById('set-new-pwd').value = '';
+          document.getElementById('set-confirm-pwd').value = '';
+          if (data.username) {
+            document.getElementById('admin-user-badge').innerText = '🛡️ ' + data.username;
+            const uStr = localStorage.getItem('varta_admin_user');
+            if (uStr) {
+              const u = JSON.parse(uStr);
+              u.username = data.username;
+              localStorage.setItem('varta_admin_user', JSON.stringify(u));
+            }
+          }
+        } else {
+          msgBox.innerText = '❌ ' + (data.error || 'Помилка оновлення');
+          msgBox.style.background = 'rgba(239, 68, 68, 0.15)';
+          msgBox.style.color = 'var(--danger)';
+          msgBox.style.border = '1px solid var(--danger)';
+          msgBox.style.display = 'block';
+        }
+      } catch (err) {
+        msgBox.innerText = '❌ Помилка зв\'язку з сервером';
+        msgBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        msgBox.style.color = 'var(--danger)';
+        msgBox.style.border = '1px solid var(--danger)';
+        msgBox.style.display = 'block';
+      } finally {
+        btn.innerText = '💾 Зберегти нові облікові дані';
+        btn.disabled = false;
+      }
     }
 
     function copyToken(token) {
