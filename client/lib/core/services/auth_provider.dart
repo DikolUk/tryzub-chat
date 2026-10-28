@@ -48,6 +48,10 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final devId = await VartaCrypto.getOrGenerateDeviceId();
+      // Generate 64-character master recovery key and derive identity
+      final recoveryKey = VartaCrypto.generateMasterRecoveryKey();
+      await VartaCrypto.deriveIdentityKeyPair(recoveryKey);
+
       final keyBundle = await VartaCrypto.generateInitialKeyBundle();
 
       final res = await ApiService.register(
@@ -77,7 +81,7 @@ class AuthProvider extends ChangeNotifier {
         await prefs.setString(_prefUser, jsonEncode(_currentUser!.toJson()));
 
         notifyListeners();
-        return {'success': true};
+        return {'success': true, 'recovery_key': recoveryKey};
       } else {
         notifyListeners();
         return {'success': false, 'error': res['error']};
@@ -86,6 +90,74 @@ class AuthProvider extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
       return {'success': false, 'error': 'Помилка генерації криптоключів: $e'};
+    }
+  }
+
+  Future<Map<String, dynamic>> recoverWithKey({
+    required String username,
+    required String password,
+    required String recoveryKeyInput,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      final cleanKey = VartaCrypto.normalizeRecoveryKey(recoveryKeyInput);
+      if (cleanKey == null) {
+        _isLoading = false;
+        notifyListeners();
+        return {
+          'success': false,
+          'error': 'Недійсний ключ відновлення. Має містити рівно 64 шістнадцяткових символи (0-9, A-F).'
+        };
+      }
+
+      // 1. Derive Identity KeyPair from 64-char key
+      await VartaCrypto.deriveIdentityKeyPair(cleanKey);
+
+      // 2. Perform backend authentication
+      final devId = await VartaCrypto.getOrGenerateDeviceId();
+      final res = await ApiService.login(
+        username: username,
+        password: password,
+        deviceId: devId,
+        deviceName: 'Термінал відновлення',
+      );
+
+      if (res['success'] != true) {
+        _isLoading = false;
+        notifyListeners();
+        return {'success': false, 'error': res['error'] ?? 'Невірний логін або пароль'};
+      }
+
+      final data = res['data'];
+      _token = data['token'];
+      _currentUser = UserModel.fromJson(data['user']);
+      _deviceId = devId;
+
+      // 3. Generate & upload fresh PreKeys for this restored session
+      final keyBundle = await VartaCrypto.generateInitialKeyBundle();
+      await ApiService.uploadPreKeys(
+        token: _token!,
+        deviceId: devId,
+        identityKey: keyBundle['identity_key'],
+        signedPreKey: keyBundle['signed_prekey'],
+        signedPreKeySig: keyBundle['signed_prekey_sig'],
+        registrationId: keyBundle['registration_id'],
+        oneTimePreKeys: (keyBundle['one_time_prekeys'] as List).cast<Map<String, dynamic>>(),
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefToken, _token!);
+      await prefs.setString(_prefUser, jsonEncode(_currentUser!.toJson()));
+
+      _isLoading = false;
+      notifyListeners();
+      return {'success': true};
+    } catch (e) {
+      _isLoading = false;
+      notifyListeners();
+      return {'success': false, 'error': 'Помилка відновлення: $e'};
     }
   }
 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/theme.dart';
+import '../core/crypto/varta_crypto.dart';
 import '../core/services/api_service.dart';
 import '../core/services/auth_provider.dart';
 import 'chat_list_screen.dart';
@@ -27,10 +29,15 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
   final _loginUsernameCtrl = TextEditingController();
   final _loginPasswordCtrl = TextEditingController();
 
+  // Recovery Form
+  final _recUsernameCtrl = TextEditingController();
+  final _recPasswordCtrl = TextEditingController();
+  final _recKeyCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -42,6 +49,9 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
     _regPasswordCtrl.dispose();
     _loginUsernameCtrl.dispose();
     _loginPasswordCtrl.dispose();
+    _recUsernameCtrl.dispose();
+    _recPasswordCtrl.dispose();
+    _recKeyCtrl.dispose();
     super.dispose();
   }
 
@@ -101,10 +111,16 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
     );
 
     if (res['success'] == true && mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const ChatListScreen()),
-      );
+      final recoveryKey = res['recovery_key'] as String?;
+      if (recoveryKey != null) {
+        await _showRecoveryKeyModal(recoveryKey);
+      }
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const ChatListScreen()),
+        );
+      }
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -150,6 +166,168 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
     }
   }
 
+  Future<void> _submitRecovery() async {
+    final username = _recUsernameCtrl.text.trim();
+    final password = _recPasswordCtrl.text;
+    final recoveryKey = _recKeyCtrl.text.trim();
+
+    if (username.isEmpty || password.isEmpty || recoveryKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: AppTheme.errorRed,
+          content: Text('Заповніть усі поля форми відновлення.'),
+        ),
+      );
+      return;
+    }
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final res = await auth.recoverWithKey(
+      username: username,
+      password: password,
+      recoveryKeyInput: recoveryKey,
+    );
+
+    if (res['success'] == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: AppTheme.onlineGreen,
+          content: Text('✓ Акаунт та ключі E2EE успішно відновлено!'),
+        ),
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const ChatListScreen()),
+      );
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTheme.errorRed,
+          content: Text('Помилка: ${res['error'] ?? 'Не вдалося відновити акаунт'}'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showRecoveryKeyModal(String key) async {
+    bool hasSavedKey = false;
+    final formattedKey = VartaCrypto.formatRecoveryKey(key);
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              backgroundColor: AppTheme.surfaceDark,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: AppTheme.accentGold, width: 1.5),
+              ),
+              title: const Row(
+                children: [
+                  Text('🔐', style: TextStyle(fontSize: 24)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'КЛЮЧ ВІДНОВЛЕННЯ',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.2,
+                        color: AppTheme.accentGold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'Обов\'язково збережіть цей 64-значний ключ у безпечному місці. Це єдиний спосіб відновити доступ до ваших чатів та шифрування у разі втрати або зміни пристрою!',
+                      style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppTheme.bgDark,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppTheme.dividerDark),
+                      ),
+                      child: SelectableText(
+                        formattedKey,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.accentGold,
+                          letterSpacing: 1.1,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.cardDark,
+                        foregroundColor: AppTheme.textPrimary,
+                        side: const BorderSide(color: AppTheme.dividerDark),
+                      ),
+                      icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
+                      label: const Text('Скопіювати 64-значний ключ', style: TextStyle(fontSize: 13)),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: key));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            backgroundColor: AppTheme.onlineGreen,
+                            content: Text('✓ Ключ скопійовано в буфер обміну!'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: hasSavedKey,
+                      activeColor: AppTheme.accentGold,
+                      checkColor: Colors.black,
+                      title: const Text(
+                        'Я надійно зберіг(-ла) мій 64-значний ключ',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                      ),
+                      onChanged: (val) {
+                        setModalState(() => hasSavedKey = val ?? false);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: hasSavedKey ? AppTheme.accentGold : Colors.grey.shade800,
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: hasSavedKey
+                      ? () => Navigator.of(ctx).pop()
+                      : null,
+                  child: const Text('УВІЙТИ В МЕСЕНДЖЕР', style: TextStyle(fontWeight: FontWeight.w800)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context);
@@ -176,14 +354,14 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
-                        color: AppTheme.accentGold.withValues(alpha: 0.3),
-                        blurRadius: 18,
+                        color: AppTheme.accentGold.withValues(alpha: 0.25),
+                        blurRadius: 20,
                         offset: const Offset(0, 6),
                       ),
                     ],
                   ),
                   child: const Center(
-                    child: Text('🛡️', style: TextStyle(fontSize: 34)),
+                    child: Text('🛡️', style: TextStyle(fontSize: 32)),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -207,7 +385,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                     color: AppTheme.accentGold,
                   ),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
 
                 // Tabs Container
                 Container(
@@ -222,10 +400,11 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                     indicatorWeight: 3,
                     labelColor: AppTheme.accentGold,
                     unselectedLabelColor: AppTheme.textMuted,
-                    labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                    labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
                     tabs: const [
-                      Tab(text: 'Вхід за паролем'),
-                      Tab(text: 'Реєстрація за інвайтом'),
+                      Tab(text: 'Вхід'),
+                      Tab(text: 'Реєстрація'),
+                      Tab(text: 'Відновлення'),
                     ],
                   ),
                 ),
@@ -233,7 +412,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
 
                 // Tab Views
                 SizedBox(
-                  height: 380,
+                  height: 400,
                   child: TabBarView(
                     controller: _tabController,
                     children: [
@@ -242,6 +421,9 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
 
                       // 2. Register View
                       _buildRegisterView(auth.isLoading),
+
+                      // 3. Recovery View
+                      _buildRecoveryView(auth.isLoading),
                     ],
                   ),
                 ),
@@ -329,7 +511,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
           TextField(
             controller: _regUsernameCtrl,
             decoration: const InputDecoration(
-              labelText: 'Бажаний логін (тільки латиниця)',
+              labelText: 'Бажаний логін (латиниця)',
               prefixIcon: Icon(Icons.account_circle_outlined, color: AppTheme.textMuted),
             ),
           ),
@@ -337,7 +519,7 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
           TextField(
             controller: _regDisplayNameCtrl,
             decoration: const InputDecoration(
-              labelText: 'Позивний / Відображуване ім\'я',
+              labelText: 'Позивний / Ім\'я',
               prefixIcon: Icon(Icons.badge_outlined, color: AppTheme.textMuted),
             ),
           ),
@@ -360,6 +542,64 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
                     child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2),
                   )
                 : const Text('ЗГЕНЕРУВАТИ КЛЮЧІ ТА ЗАРЕЄСТРУВАТИСЬ'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecoveryView(bool isLoading) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _recUsernameCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Логін користувача',
+              prefixIcon: Icon(Icons.person_outline, color: AppTheme.textMuted),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _recPasswordCtrl,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Пароль',
+              prefixIcon: Icon(Icons.lock_outline, color: AppTheme.textMuted),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _recKeyCtrl,
+            maxLines: 2,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            decoration: const InputDecoration(
+              labelText: '64-значний ключ відновлення',
+              hintText: 'A8F4-1C9D-E342-... (або 64 hex символи)',
+              prefixIcon: Icon(Icons.vpn_key, color: AppTheme.accentGold),
+            ),
+          ),
+          const SizedBox(height: 18),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.accentGold,
+              foregroundColor: Colors.black,
+            ),
+            onPressed: isLoading ? null : _submitRecovery,
+            child: isLoading
+                ? const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2),
+                  )
+                : const Text('🔓 ВІДНОВИТИ АКАУНТ ТА КЛЮЧІ', style: TextStyle(fontWeight: FontWeight.w800)),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '🔑 Відновлює ваші E2EE ключі шифрування на цьому пристрої за 64-значним майстер-кодом',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
           ),
         ],
       ),

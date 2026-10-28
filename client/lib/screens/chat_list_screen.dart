@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/theme.dart';
+import '../core/crypto/varta_crypto.dart';
 import '../core/models/user.dart';
 import '../core/services/api_service.dart';
 import '../core/services/auth_provider.dart';
@@ -46,6 +48,95 @@ class _ChatListScreenState extends State<ChatListScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _showMyRecoveryKey() async {
+    final key = await VartaCrypto.getSavedRecoveryKey();
+    if (key == null || !mounted) return;
+    final formattedKey = VartaCrypto.formatRecoveryKey(key);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surfaceDark,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppTheme.accentGold, width: 1.5),
+        ),
+        title: const Row(
+          children: [
+            Text('🔐', style: TextStyle(fontSize: 22)),
+            SizedBox(width: 8),
+            Text(
+              'МІЙ КЛЮЧ ВІДНОВЛЕННЯ',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.1,
+                color: AppTheme.accentGold,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'За допомогою цього 64-значного коду ви можете відновити доступ до ваших E2EE чатів на будь-якому новому пристрої:',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.bgDark,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.dividerDark),
+              ),
+              child: SelectableText(
+                formattedKey,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.accentGold,
+                  letterSpacing: 1.1,
+                  height: 1.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.cardDark,
+                foregroundColor: AppTheme.textPrimary,
+                side: const BorderSide(color: AppTheme.dividerDark),
+              ),
+              icon: const Icon(Icons.copy, size: 16, color: AppTheme.accentGold),
+              label: const Text('Скопіювати 64-значний ключ', style: TextStyle(fontSize: 13)),
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: key));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: AppTheme.onlineGreen,
+                    content: Text('✓ Ключ скопійовано!'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('ЗАКРИТИ', style: TextStyle(color: AppTheme.accentGold, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -99,6 +190,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.vpn_key_outlined, color: AppTheme.accentGold),
+            onPressed: _showMyRecoveryKey,
+            tooltip: 'Мій 64-значний ключ відновлення',
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, color: AppTheme.textMuted),
             onPressed: _loadUsers,
@@ -160,18 +256,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator(color: AppTheme.accentGold))
                 : _users.isEmpty
-                    ? Center(
+                    ? const Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.shield_outlined, size: 48, color: AppTheme.dividerDark),
-                            const SizedBox(height: 12),
-                            const Text(
+                            Icon(Icons.shield_outlined, size: 48, color: AppTheme.dividerDark),
+                            SizedBox(height: 12),
+                            Text(
                               'У закритій спільноті поки немає інших учасників',
                               style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
                             ),
-                            const SizedBox(height: 8),
-                            const Text(
+                            SizedBox(height: 8),
+                            Text(
                               'Згенеруйте інвайт в CMS-панелі для нових бійців',
                               style: TextStyle(color: AppTheme.accentGold, fontSize: 12),
                             ),

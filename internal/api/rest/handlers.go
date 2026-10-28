@@ -430,18 +430,40 @@ func (a *API) HandleUploadPreKeys(w http.ResponseWriter, r *http.Request) {
 	currentDeviceID, _ := middleware.GetDeviceFromContext(r.Context())
 
 	var req struct {
-		PreKeys []models.OTKDTO `json:"prekeys"`
+		IdentityKey     string          `json:"identity_key"`
+		SignedPreKey    string          `json:"signed_prekey"`
+		SignedPreKeySig string          `json:"signed_prekey_sig"`
+		RegistrationID  int             `json:"registration_id"`
+		PreKeys         []models.OTKDTO `json:"prekeys"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid format"}`, http.StatusBadRequest)
 		return
 	}
 
 	var devRecordID int
-	err := a.db.QueryRow("SELECT id FROM devices WHERE user_id = $1 AND device_id = $2", currentUser.ID, currentDeviceID).Scan(&devRecordID)
-	if err != nil {
-		http.Error(w, `{"error":"device not found"}`, http.StatusNotFound)
-		return
+	if req.IdentityKey != "" {
+		err := a.db.QueryRow(`
+			INSERT INTO devices (user_id, device_id, device_name, identity_key, signed_prekey, signed_prekey_sig, registration_id)
+			VALUES ($1, $2, 'Клієнт VARTA', $3, $4, $5, $6)
+			ON CONFLICT (user_id, device_id) DO UPDATE SET
+				identity_key = EXCLUDED.identity_key,
+				signed_prekey = EXCLUDED.signed_prekey,
+				signed_prekey_sig = EXCLUDED.signed_prekey_sig,
+				registration_id = EXCLUDED.registration_id,
+				last_seen = NOW()
+			RETURNING id
+		`, currentUser.ID, currentDeviceID, req.IdentityKey, req.SignedPreKey, req.SignedPreKeySig, req.RegistrationID).Scan(&devRecordID)
+		if err != nil {
+			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+			return
+		}
+	} else {
+		err := a.db.QueryRow("SELECT id FROM devices WHERE user_id = $1 AND device_id = $2", currentUser.ID, currentDeviceID).Scan(&devRecordID)
+		if err != nil {
+			http.Error(w, `{"error":"device not found"}`, http.StatusNotFound)
+			return
+		}
 	}
 
 	for _, k := range req.PreKeys {

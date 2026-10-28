@@ -89,6 +89,37 @@ class ApiService {
     }
   }
 
+  static Future<bool> uploadPreKeys({
+    required String token,
+    required String deviceId,
+    required String identityKey,
+    required String signedPreKey,
+    required String signedPreKeySig,
+    required int registrationId,
+    required List<Map<String, dynamic>> oneTimePreKeys,
+  }) async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiEndpoints.baseUrl}/api/v1/keys/prekeys'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'device_id': deviceId,
+          'identity_key': identityKey,
+          'signed_prekey': signedPreKey,
+          'signed_prekey_sig': signedPreKeySig,
+          'registration_id': registrationId,
+          'prekeys': oneTimePreKeys,
+        }),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
   static Future<List<UserModel>> getUsers(String token) async {
     try {
       final res = await http.get(

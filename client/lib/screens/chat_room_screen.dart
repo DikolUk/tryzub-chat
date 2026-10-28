@@ -135,7 +135,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     final myId = auth.currentUser?.id ?? 0;
 
     _textController.clear();
-    final msgId = 'vmsg-${DateTime.now().millisecondsSinceEpoch}-${myId}';
+    final msgId = 'vmsg-${DateTime.now().millisecondsSinceEpoch}-$myId';
 
     // Add locally immediately
     final localMsg = LocalMessage(
