@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/argon2
+	"golang.org/x/crypto/argon2"
 )
 
 // Argon2id parameters recommended by OWASP
