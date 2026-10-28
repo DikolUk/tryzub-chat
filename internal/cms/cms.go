@@ -1,9 +1,11 @@
 package cms
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -52,7 +54,7 @@ func (c *CMS) HandleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
@@ -156,7 +158,7 @@ func (c *CMS) HandleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		ValidDays int    `json:"valid_days"`
 		Note      string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
@@ -342,4 +344,13 @@ func (c *CMS) HandleGetAudit(w http.ResponseWriter, r *http.Request) {
 func fmtDetails(m map[string]interface{}) string {
 	b, _ := json.Marshal(m)
 	return string(b)
+}
+
+func decodeJSON(r *http.Request, target interface{}) error {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+	return json.Unmarshal(body, target)
 }

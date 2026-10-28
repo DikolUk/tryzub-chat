@@ -1,9 +1,11 @@
 package rest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -63,7 +65,7 @@ func (a *API) HandleCheckInvite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
@@ -106,7 +108,7 @@ func (a *API) HandleCheckInvite(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	var req models.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"невірний формат запиту"}`, http.StatusBadRequest)
 		return
 	}
@@ -249,7 +251,7 @@ func (a *API) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, `{"error":"невірний формат запиту"}`, http.StatusBadRequest)
 		return
 	}
@@ -528,6 +530,15 @@ func (a *API) HandleAckMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "acknowledged"})
+}
+
+func decodeJSON(r *http.Request, target interface{}) error {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+	return json.Unmarshal(body, target)
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
