@@ -1,0 +1,55 @@
+workflows:
+  ios-workflow:
+    name: iOS VARTA Messenger Build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    working_directory: client
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Disable Swift Package Manager & configure Flutter
+        script: |
+          flutter config --no-enable-swift-package-manager
+      - name: Set up code signing settings on Xcode project
+        script: xcode-project use-profiles --warn-only
+      - name: Get Flutter packages & setup iOS config
+        script: |
+          flutter precache --ios
+          flutter packages pub get
+          flutter build ios --config-only --release --no-codesign
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios && pod install --repo-update
+      - name: Build iOS Archive (Unsigned)
+        script: |
+          flutter build ipa --release --no-codesign
+      - name: Package IPA
+        script: |
+          mkdir -p Payload
+          cp -r build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app Payload/
+          zip -qr build/Varta-iOS.ipa Payload
+          rm -rf Payload
+    artifacts:
+      - client/build/Varta-iOS.ipa
+      - client/build/ios/archive/Runner.xcarchive
+      - client/build/ios/ipa/*.ipa
+
+  android-workflow:
+    name: Android VARTA Messenger Build
+    instance_type: linux_x2
+    max_build_duration: 30
+    working_directory: client
+    environment:
+      flutter: stable
+      java: 17
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter packages pub get
+      - name: Build APK (Release)
+        script: |
+          flutter build apk --release
+    artifacts:
+      - client/build/app/outputs/flutter-apk/*.apk
