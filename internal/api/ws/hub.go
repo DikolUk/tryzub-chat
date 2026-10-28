@@ -24,11 +24,16 @@ var upgrader = websocket.Upgrader{
 }
 
 type Frame struct {
-	Type              string          `json:"type"` // "msg", "ack", "ping", "pong", "status"
+	Type              string          `json:"type"` // "msg", "ack", "ping", "pong", "typing", "read", "read_receipt", "delete", "msg_deleted", "reaction", "server_ack", "presence"
 	MessageID         string          `json:"message_id,omitempty"`
+	MessageIDs        []string        `json:"message_ids,omitempty"`
+	SenderUserID      int             `json:"sender_user_id,omitempty"`
 	RecipientUserID   int             `json:"recipient_user_id,omitempty"`
 	RecipientDeviceID string          `json:"recipient_device_id,omitempty"`
 	Ciphertext        string          `json:"ciphertext,omitempty"`
+	Emoji             string          `json:"emoji,omitempty"`
+	IsTyping          bool            `json:"is_typing,omitempty"`
+	IsOnline          bool            `json:"is_online,omitempty"`
 	Payload           json.RawMessage `json:"payload,omitempty"`
 }
 
@@ -65,7 +70,6 @@ func (h *Hub) Run() {
 		case client := <-h.register:
 			key := fmt.Sprintf("%d:%s", client.userID, client.deviceID)
 			h.mu.Lock()
-			// If existing connection, close old one
 			if existing, ok := h.clients[key]; ok {
 				close(existing.send)
 				_ = existing.conn.Close()
@@ -90,6 +94,28 @@ func (h *Hub) Run() {
 	}
 }
 
+func (h *Hub) BroadcastToUser(userID int, f Frame) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, client := range h.clients {
+		if client.userID == userID {
+			client.sendFrame(f)
+		}
+	}
+}
+
+func (h *Hub) IsUserOnline(userID int) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, client := range h.clients {
+		if client.userID == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -104,28 +130,30 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	var userID int
 	var deviceID string
 	var expiresAt time.Time
+	var isActive bool
 
 	err := h.db.QueryRow(`
-		SELECT user_id, device_id, expires_at
-		FROM sessions
-		WHERE token_hash = $1
-	`, tokenHash).Scan(&userID, &deviceID, &expiresAt)
+		SELECT s.user_id, s.device_id, s.expires_at, u.is_active
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1
+	`, tokenHash).Scan(&userID, &deviceID, &expiresAt, &isActive)
 
-	if err != nil || time.Now().After(expiresAt) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if err != nil || !isActive || time.Now().After(expiresAt) {
+		http.Error(w, "invalid or expired session token", http.StatusUnauthorized)
 		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[WS] Upgrade error: %v", err)
+		log.Printf("[WS] WebSocket upgrade failed: %v", err)
 		return
 	}
 
 	client := &Client{
 		hub:      h,
 		conn:     conn,
-		send:     make(chan []byte, 128),
+		send:     make(chan []byte, 512),
 		userID:   userID,
 		deviceID: deviceID,
 	}
@@ -164,13 +192,92 @@ func (c *Client) readPump() {
 		case "ping":
 			c.sendFrame(Frame{Type: "pong"})
 
+		case "typing":
+			if frame.RecipientUserID > 0 {
+				c.hub.BroadcastToUser(frame.RecipientUserID, Frame{
+					Type:         "typing",
+					SenderUserID: c.userID,
+					IsTyping:     frame.IsTyping,
+				})
+			}
+
 		case "ack":
 			if frame.MessageID != "" {
-				_, _ = c.hub.db.Exec(`
+				var senderID int
+				err := c.hub.db.QueryRow(`
 					UPDATE messages
 					SET delivered = TRUE, delivered_at = NOW()
-					WHERE message_id = $1 AND recipient_user_id = $2 AND recipient_device_id = $3
-				`, frame.MessageID, c.userID, c.deviceID)
+					WHERE message_id = $1 AND recipient_user_id = $2
+					RETURNING sender_user_id
+				`, frame.MessageID, c.userID).Scan(&senderID)
+				if err == nil && senderID > 0 {
+					c.hub.BroadcastToUser(senderID, Frame{
+						Type:         "ack",
+						MessageID:    frame.MessageID,
+						SenderUserID: c.userID,
+					})
+				}
+			}
+
+		case "read":
+			for _, mid := range frame.MessageIDs {
+				var senderID int
+				err := c.hub.db.QueryRow(`
+					UPDATE messages
+					SET read_at = NOW(), delivered = TRUE, delivered_at = COALESCE(delivered_at, NOW())
+					WHERE message_id = $1 AND recipient_user_id = $2
+					RETURNING sender_user_id
+				`, mid, c.userID).Scan(&senderID)
+				if err == nil && senderID > 0 {
+					c.hub.BroadcastToUser(senderID, Frame{
+						Type:         "read_receipt",
+						MessageIDs:   []string{mid},
+						SenderUserID: c.userID,
+					})
+				}
+			}
+
+		case "delete":
+			if frame.MessageID != "" {
+				var recID int
+				err := c.hub.db.QueryRow(`
+					UPDATE messages
+					SET is_deleted = TRUE
+					WHERE message_id = $1 AND sender_user_id = $2
+					RETURNING recipient_user_id
+				`, frame.MessageID, c.userID).Scan(&recID)
+				if err == nil && recID > 0 {
+					c.hub.BroadcastToUser(recID, Frame{
+						Type:      "msg_deleted",
+						MessageID: frame.MessageID,
+					})
+				}
+			}
+
+		case "reaction":
+			if frame.MessageID != "" && frame.Emoji != "" {
+				var senderID, recID int
+				err := c.hub.db.QueryRow(`
+					SELECT sender_user_id, recipient_user_id FROM messages WHERE message_id = $1
+				`, frame.MessageID).Scan(&senderID, &recID)
+				if err == nil {
+					_, _ = c.hub.db.Exec(`
+						INSERT INTO message_reactions (message_id, user_id, emoji)
+						VALUES ($1, $2, $3)
+						ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = EXCLUDED.emoji
+					`, frame.MessageID, c.userID, frame.Emoji)
+
+					otherUserID := recID
+					if c.userID == recID {
+						otherUserID = senderID
+					}
+					c.hub.BroadcastToUser(otherUserID, Frame{
+						Type:         "reaction",
+						MessageID:    frame.MessageID,
+						Emoji:        frame.Emoji,
+						SenderUserID: c.userID,
+					})
+				}
 			}
 
 		case "msg":
@@ -196,21 +303,15 @@ func (c *Client) readPump() {
 				MessageID: frame.MessageID,
 			})
 
-			// 2. If recipient device is currently connected, route immediately
-			c.hub.mu.RLock()
-			targetKey := fmt.Sprintf("%d:%s", frame.RecipientUserID, frame.RecipientDeviceID)
-			targetClient, isOnline := c.hub.clients[targetKey]
-			c.hub.mu.RUnlock()
-
-			if isOnline {
-				targetClient.sendFrame(Frame{
-					Type:              "msg",
-					MessageID:         frame.MessageID,
-					RecipientUserID:   frame.RecipientUserID,
-					RecipientDeviceID: frame.RecipientDeviceID,
-					Ciphertext:        frame.Ciphertext,
-				})
-			}
+			// 2. Broadcast immediately to all connected devices of recipient
+			c.hub.BroadcastToUser(frame.RecipientUserID, Frame{
+				Type:              "msg",
+				MessageID:         frame.MessageID,
+				SenderUserID:      c.userID,
+				RecipientUserID:   frame.RecipientUserID,
+				RecipientDeviceID: frame.RecipientDeviceID,
+				Ciphertext:        frame.Ciphertext,
+			})
 		}
 	}
 }
@@ -272,7 +373,7 @@ func (h *Hub) drainOfflineQueue(c *Client) {
 	rows, err := h.db.Query(`
 		SELECT message_id, sender_user_id, sender_device_id, ciphertext
 		FROM messages
-		WHERE recipient_user_id = $1 AND recipient_device_id = $2 AND delivered = FALSE
+		WHERE recipient_user_id = $1 AND recipient_device_id = $2 AND delivered = FALSE AND is_deleted = FALSE
 		ORDER BY id ASC
 		LIMIT 100
 	`, c.userID, c.deviceID)
@@ -288,6 +389,7 @@ func (h *Hub) drainOfflineQueue(c *Client) {
 			c.sendFrame(Frame{
 				Type:              "msg",
 				MessageID:         msgID,
+				SenderUserID:      senderID,
 				RecipientUserID:   c.userID,
 				RecipientDeviceID: c.deviceID,
 				Ciphertext:        ciphertext,

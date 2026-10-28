@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -60,22 +62,38 @@ func Connect(cfg *config.Config) (*DB, error) {
 }
 
 func (db *DB) runMigrations() error {
-	migrationPath := "migrations/000001_initial_schema.sql"
-	sqlBytes, err := os.ReadFile(migrationPath)
+	migrationsDirs := []string{"migrations", "/app/migrations"}
+	var dir string
+	for _, d := range migrationsDirs {
+		if stat, err := os.Stat(d); err == nil && stat.IsDir() {
+			dir = d
+			break
+		}
+	}
+	if dir == "" {
+		return fmt.Errorf("no migrations directory found")
+	}
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// Fallback for container root path
-		sqlBytes, err = os.ReadFile("/app/migrations/000001_initial_schema.sql")
-		if err != nil {
-			return fmt.Errorf("failed to read migration file: %w", err)
+		return fmt.Errorf("failed to read migrations dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			filePath := filepath.Join(dir, entry.Name())
+			sqlBytes, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read %s: %w", entry.Name(), err)
+			}
+			_, err = db.Exec(string(sqlBytes))
+			if err != nil {
+				return fmt.Errorf("executing migration %s failed: %w", entry.Name(), err)
+			}
+			log.Printf("[DB] Applied migration %s successfully", entry.Name())
 		}
 	}
 
-	_, err = db.Exec(string(sqlBytes))
-	if err != nil {
-		return fmt.Errorf("executing migration failed: %w", err)
-	}
-
-	log.Printf("[DB] Migrations executed successfully")
 	return nil
 }
 

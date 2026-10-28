@@ -38,7 +38,7 @@ func main() {
 	go hub.Run()
 
 	// 3. REST API & CMS
-	api := rest.New(db)
+	api := rest.New(db, hub)
 	adminCMS := cms.New(db)
 
 	// 4. HTTP Router

@@ -5,24 +5,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"varta/internal/api/middleware"
+	"varta/internal/api/ws"
 	"varta/internal/auth"
 	"varta/internal/database"
 	"varta/internal/models"
 )
 
 type API struct {
-	db *database.DB
+	db  *database.DB
+	hub *ws.Hub
 }
 
-func New(db *database.DB) *API {
-	return &API{db: db}
+func New(db *database.DB, hub *ws.Hub) *API {
+	return &API{db: db, hub: hub}
 }
 
 func (a *API) Routes(r chi.Router) {
@@ -44,10 +49,18 @@ func (a *API) Routes(r chi.Router) {
 		authR.Get("/keys/{userId}", a.HandleGetPreKeyBundle)
 		authR.Post("/keys/prekeys", a.HandleUploadPreKeys)
 
-		// Messages queue
+		// Messages queue & history
 		authR.Get("/messages/pending", a.HandleGetPendingMessages)
+		authR.Get("/messages/history", a.HandleGetConversationHistory)
 		authR.Post("/messages/send", a.HandleSendMessage)
 		authR.Post("/messages/ack", a.HandleAckMessages)
+		authR.Post("/messages/read", a.HandleMarkMessagesRead)
+		authR.Post("/messages/delete", a.HandleDeleteMessage)
+		authR.Post("/messages/reaction", a.HandleAddReaction)
+
+		// Encrypted Media Vault
+		authR.Post("/media/upload", a.HandleUploadMedia)
+		authR.Get("/media/{id}", a.HandleGetMedia)
 	})
 }
 
@@ -512,7 +525,7 @@ func (a *API) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
 	currentDeviceID, _ := middleware.GetDeviceFromContext(r.Context())
 
 	var env models.MessageEnvelope
-	if err := json.NewDecoder(r.Body).Decode(&env); err != nil || env.MessageID == "" || env.Ciphertext == "" {
+	if err := decodeJSON(r, &env); err != nil || env.MessageID == "" || env.Ciphertext == "" {
 		http.Error(w, `{"error":"invalid envelope"}`, http.StatusBadRequest)
 		return
 	}
@@ -528,7 +541,279 @@ func (a *API) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.hub != nil {
+		a.hub.BroadcastToUser(env.RecipientUserID, ws.Frame{
+			Type:              "msg",
+			MessageID:         env.MessageID,
+			SenderUserID:      currentUser.ID,
+			RecipientUserID:   env.RecipientUserID,
+			RecipientDeviceID: env.RecipientDeviceID,
+			Ciphertext:        env.Ciphertext,
+		})
+	}
+
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{"status": "queued", "message_id": env.MessageID})
+}
+
+func (a *API) HandleGetConversationHistory(w http.ResponseWriter, r *http.Request) {
+	currentUser, _ := middleware.GetUserFromContext(r.Context())
+	withUserID, err := strconv.Atoi(r.URL.Query().Get("with_user"))
+	if err != nil || withUserID <= 0 {
+		http.Error(w, `{"error":"with_user parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	limit := 100
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 200 {
+		limit = l
+	}
+
+	rows, err := a.db.Query(`
+		SELECT id, message_id, sender_user_id, sender_device_id, recipient_user_id, recipient_device_id,
+		       ciphertext, type, delivered, read_at, is_deleted, created_at
+		FROM messages
+		WHERE ((sender_user_id = $1 AND recipient_user_id = $2)
+		   OR (sender_user_id = $2 AND recipient_user_id = $1))
+		   AND is_deleted = FALSE
+		ORDER BY id DESC
+		LIMIT $3
+	`, currentUser.ID, withUserID, limit)
+
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type HistoryMsg struct {
+		ID                int64      `json:"id"`
+		MessageID         string     `json:"message_id"`
+		SenderUserID      int        `json:"sender_user_id"`
+		SenderDeviceID    string     `json:"sender_device_id"`
+		RecipientUserID   int        `json:"recipient_user_id"`
+		RecipientDeviceID string     `json:"recipient_device_id"`
+		Ciphertext        string     `json:"ciphertext"`
+		Type              string     `json:"type"`
+		Delivered         bool       `json:"delivered"`
+		ReadAt            *time.Time `json:"read_at"`
+		IsDeleted         bool       `json:"is_deleted"`
+		CreatedAt         time.Time  `json:"created_at"`
+	}
+
+	history := make([]HistoryMsg, 0)
+	for rows.Next() {
+		var m HistoryMsg
+		if err := rows.Scan(&m.ID, &m.MessageID, &m.SenderUserID, &m.SenderDeviceID,
+			&m.RecipientUserID, &m.RecipientDeviceID, &m.Ciphertext, &m.Type,
+			&m.Delivered, &m.ReadAt, &m.IsDeleted, &m.CreatedAt); err == nil {
+			history = append(history, m)
+		}
+	}
+
+	// Reverse to chronological order (oldest first)
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
+
+	respondJSON(w, http.StatusOK, history)
+}
+
+func (a *API) HandleMarkMessagesRead(w http.ResponseWriter, r *http.Request) {
+	currentUser, _ := middleware.GetUserFromContext(r.Context())
+
+	var req struct {
+		MessageIDs []string `json:"message_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil || len(req.MessageIDs) == 0 {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	for _, mid := range req.MessageIDs {
+		var senderID int
+		err := a.db.QueryRow(`
+			UPDATE messages
+			SET read_at = NOW(), delivered = TRUE, delivered_at = COALESCE(delivered_at, NOW())
+			WHERE message_id = $1 AND recipient_user_id = $2
+			RETURNING sender_user_id
+		`, mid, currentUser.ID).Scan(&senderID)
+
+		if err == nil && senderID > 0 && a.hub != nil {
+			a.hub.BroadcastToUser(senderID, ws.Frame{
+				Type:         "read_receipt",
+				MessageIDs:   []string{mid},
+				SenderUserID: currentUser.ID,
+			})
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (a *API) HandleDeleteMessage(w http.ResponseWriter, r *http.Request) {
+	currentUser, _ := middleware.GetUserFromContext(r.Context())
+
+	var req struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.MessageID == "" {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	var recID int
+	err := a.db.QueryRow(`
+		UPDATE messages
+		SET is_deleted = TRUE
+		WHERE message_id = $1 AND sender_user_id = $2
+		RETURNING recipient_user_id
+	`, req.MessageID, currentUser.ID).Scan(&recID)
+
+	if err != nil {
+		http.Error(w, `{"error":"message not found or permission denied"}`, http.StatusNotFound)
+		return
+	}
+
+	if a.hub != nil && recID > 0 {
+		a.hub.BroadcastToUser(recID, ws.Frame{
+			Type:      "msg_deleted",
+			MessageID: req.MessageID,
+		})
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func (a *API) HandleAddReaction(w http.ResponseWriter, r *http.Request) {
+	currentUser, _ := middleware.GetUserFromContext(r.Context())
+
+	var req struct {
+		MessageID string `json:"message_id"`
+		Emoji     string `json:"emoji"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.MessageID == "" || req.Emoji == "" {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	var senderID, recID int
+	err := a.db.QueryRow(`
+		SELECT sender_user_id, recipient_user_id FROM messages WHERE message_id = $1
+	`, req.MessageID).Scan(&senderID, &recID)
+
+	if err != nil {
+		http.Error(w, `{"error":"message not found"}`, http.StatusNotFound)
+		return
+	}
+
+	_, _ = a.db.Exec(`
+		INSERT INTO message_reactions (message_id, user_id, emoji)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = EXCLUDED.emoji
+	`, req.MessageID, currentUser.ID, req.Emoji)
+
+	otherUserID := recID
+	if currentUser.ID == recID {
+		otherUserID = senderID
+	}
+
+	if a.hub != nil && otherUserID > 0 {
+		a.hub.BroadcastToUser(otherUserID, ws.Frame{
+			Type:         "reaction",
+			MessageID:    req.MessageID,
+			Emoji:        req.Emoji,
+			SenderUserID: currentUser.ID,
+		})
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+const MediaDir = "/app/data/media"
+
+func (a *API) HandleUploadMedia(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 50 MB max body
+	r.Body = http.MaxBytesReader(w, r.Body, 50*1024*1024)
+
+	dir := MediaDir
+	if stat, err := os.Stat("data/media"); err == nil && stat.IsDir() {
+		dir = "data/media"
+	}
+	_ = os.MkdirAll(dir, 0755)
+
+	blob, err := io.ReadAll(r.Body)
+	if err != nil || len(blob) == 0 {
+		http.Error(w, `{"error":"empty or invalid payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	token, _ := auth.GenerateSecureToken(16)
+	mediaID := fmt.Sprintf("vmed-%d-%s", time.Now().UnixMilli(), token[:12])
+	filePath := filepath.Join(dir, mediaID+".blob")
+
+	if err := os.WriteFile(filePath, blob, 0644); err != nil {
+		http.Error(w, `{"error":"failed to save blob"}`, http.StatusInternalServerError)
+		return
+	}
+
+	mimeType := r.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	_, err = a.db.Exec(`
+		INSERT INTO media_blobs (id, uploader_user_id, file_size, mime_type, file_path)
+		VALUES ($1, $2, $3, $4, $5)
+	`, mediaID, currentUser.ID, len(blob), mimeType, filePath)
+
+	if err != nil {
+		_ = os.Remove(filePath)
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"success":  true,
+		"media_id": mediaID,
+		"url":      "/api/v1/media/" + mediaID,
+		"size":     len(blob),
+	})
+}
+
+func (a *API) HandleGetMedia(w http.ResponseWriter, r *http.Request) {
+	mediaID := chi.URLParam(r, "id")
+	if mediaID == "" {
+		http.Error(w, "invalid media id", http.StatusBadRequest)
+		return
+	}
+
+	var filePath, mimeType string
+	err := a.db.QueryRow(`
+		SELECT file_path, mime_type FROM media_blobs WHERE id = $1
+	`, mediaID).Scan(&filePath, &mimeType)
+
+	if err != nil {
+		http.Error(w, "media not found", http.StatusNotFound)
+		return
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		http.Error(w, "file missing from storage", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (a *API) HandleAckMessages(w http.ResponseWriter, r *http.Request) {
