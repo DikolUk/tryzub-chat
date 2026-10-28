@@ -35,3 +35,11 @@ migrate_working_dir/
 **/ios/**/flutter_export_environment.sh
 **/ios/**/Pods/
 **/ios/Podfile.lock
+**/ios/Flutter/ephemeral/
+
+# Android related
+.gradle/
+**/android/.gradle/
+**/android/local.properties
+**/android/captures/
+**/android/gradleBuild/
